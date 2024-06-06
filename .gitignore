@@ -39,3 +39,10 @@ _deps
 *.exe
 *.out
 *.app
+
+.cache/
+build/
+
+# net weights
+*.weights
+
