@@ -8,5 +8,5 @@ include_directories(${OpenCV_INCLUDE_DIRS})
 
 add_executable(objectTracking parallel.cpp)
 target_link_libraries(objectTracking ${OpenCV_LIBS})
-#target_compile_options(my_target PRIVATE -ggdb -Wall)
+# target_compile_options(my_target PRIVATE -ggdb -Wall)
 

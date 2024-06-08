@@ -40,6 +40,8 @@ _deps
 *.out
 *.app
 
+.clang-format
+
 .cache/
 build/
 
