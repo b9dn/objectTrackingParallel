@@ -1,3 +1,4 @@
+#include <atomic>
 #include <condition_variable>
 #include <iostream>
 #include <mutex>
@@ -18,8 +19,9 @@ mutex mtx_frameQueue;
 mutex mtx_outputQueue;
 condition_variable cv_frameQueue;
 condition_variable cv_outputQueue;
-bool finished = false;
+atomic<bool> finished(false);
 const size_t MAX_QUEUE_SIZE = 30;
+const int FRAME_SKIP = 10;
 
 void processFrame(const String &modelConfiguration, const String &modelWeights,
                   vector<String> outputLayers) {
@@ -34,9 +36,9 @@ void processFrame(const String &modelConfiguration, const String &modelWeights,
         {
             unique_lock<mutex> lock(mtx_frameQueue);
             cv_frameQueue.wait(lock,
-                               [] { return !frameQueue.empty() || finished; });
+                               [] { return !frameQueue.empty() || finished.load(); });
 
-            if (finished && frameQueue.empty())
+            if (finished.load() && frameQueue.empty())
                 break;
 
             cap = frameQueue.front();
@@ -59,6 +61,42 @@ void processFrame(const String &modelConfiguration, const String &modelWeights,
     }
 }
 
+void captureFrames(VideoCapture &cap) {
+    int frameCount = 0;
+
+    while (true) {
+        Mat frame;
+        cap >> frame;
+
+        if (frame.empty() || finished.load()) {
+            finished = true;
+            cv_frameQueue.notify_all();
+            break;
+        }
+
+        frameCount++;
+
+        if(frameCount % 100 == 0)
+            cout << "Captured frame size: " << frame.cols << "x" << frame.rows
+                 << " | Frame Count: " << frameCount << endl;
+        
+        if (frameCount % FRAME_SKIP != 0)
+            continue;
+
+        {
+            unique_lock<mutex> lock(mtx_frameQueue);
+            if (frameQueue.size() >= MAX_QUEUE_SIZE) {
+                // Remove older frames if queue is full
+                while (frameQueue.size() > MAX_QUEUE_SIZE / 2) {
+                    frameQueue.pop();
+                }
+            }
+            frameQueue.push(make_pair(frame, frameCount));
+        }
+        cv_frameQueue.notify_one();
+    }
+}
+
 int main(int argc, char **argv) {
     // Load YOLO
     String modelConfiguration = "../net/yolov3.cfg";
@@ -72,8 +110,7 @@ int main(int argc, char **argv) {
 
     // Open the camera or video file
     VideoCapture cap;
-    string source =
-        argc > 1 ? argv[1] : "0"; // Default to "0" if no argument is given
+    string source = argc > 1 ? argv[1] : "0"; // Default to "0" if no argument is given
     if (source == "0") {
         cap.open(0); // Open default camera
     } else {
@@ -98,52 +135,19 @@ int main(int argc, char **argv) {
     vector<thread> workers;
     int numThreads = 4;
     for (int i = 0; i < numThreads; ++i)
-        workers.push_back(thread(processFrame, modelConfiguration, modelWeights,
-                                 outputLayers));
+        workers.push_back(thread(processFrame, modelConfiguration, modelWeights, outputLayers));
 
-    int frameCount = 0;
+    thread captureThread(captureFrames, ref(cap));
+
     int actualDisplayNum = 0;
 
     while (true) {
-        Mat frame;
-        cap >> frame;
-
-        if (frame.empty()) {
-            cerr
-                << "Error: Frame capture failed or end of stream. Source might "
-                   "be "
-                   "an unsupported video format or the file might be corrupted."
-                << endl;
-            break;
-        }
-
-        frameCount++;
-        cout << "Captured frame size: " << frame.cols << "x" << frame.rows
-             << " | Frame Count: " << frameCount << endl;
-        
-        if(frameCount % 10 == 0) {
-            {
-                unique_lock<mutex> lock(mtx_frameQueue);
-                if (frameQueue.size() >= MAX_QUEUE_SIZE) {
-                    cout << "Frame queue is full, waiting..." << endl;
-                    cv_frameQueue.wait(
-                        lock, [] { return frameQueue.size() < MAX_QUEUE_SIZE; });
-                }
-                frameQueue.push(make_pair(frame, frameCount));
-            }
-            cv_frameQueue.notify_one();
-        }
-
-        if (outputQueue.empty())
-            continue;
-
         pair<pair<Mat, int>, vector<Mat>> result;
         {
             unique_lock<mutex> lock(mtx_outputQueue);
-            cv_outputQueue.wait(
-                lock, [] { return !outputQueue.empty() || finished; });
+            cv_outputQueue.wait(lock, [] { return !outputQueue.empty() || finished.load(); });
 
-            if (finished && outputQueue.empty())
+            if (finished.load() && outputQueue.empty())
                 break;
 
             result = outputQueue.front();
@@ -182,18 +186,15 @@ int main(int argc, char **argv) {
             break;
     }
 
-    cout << "Total frames captured: " << frameCount << endl;
+    cout << "Total frames captured." << endl;
 
     // Set finish flag and notify threads
-    {
-        unique_lock<mutex> lock_frame(mtx_frameQueue);
-        unique_lock<mutex> lock_output(mtx_outputQueue);
-        finished = true;
-    }
+    finished = true;
     cv_frameQueue.notify_all();
     cv_outputQueue.notify_all();
 
     // Join threads
+    captureThread.join();
     for (auto &t : workers)
         t.join();
 
