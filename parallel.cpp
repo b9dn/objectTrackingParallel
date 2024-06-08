@@ -5,20 +5,21 @@
 #include <opencv2/opencv.hpp>
 #include <queue>
 #include <thread>
+#include <utility>
 
 using namespace cv;
 using namespace dnn;
 using namespace std;
 
 // Global queues and synchronization variables
-queue<Mat> frameQueue;
-queue<pair<Mat, vector<Mat>>> outputQueue;
+queue<pair<Mat, int>> frameQueue;
+queue<pair<pair<Mat, int>, vector<Mat>>> outputQueue;
 mutex mtx_frameQueue;
 mutex mtx_outputQueue;
 condition_variable cv_frameQueue;
 condition_variable cv_outputQueue;
 bool finished = false;
-const size_t MAX_QUEUE_SIZE = 20;
+const size_t MAX_QUEUE_SIZE = 30;
 
 void processFrame(const String &modelConfiguration, const String &modelWeights,
                   vector<String> outputLayers) {
@@ -27,7 +28,9 @@ void processFrame(const String &modelConfiguration, const String &modelWeights,
     net.setPreferableTarget(DNN_TARGET_CPU);
 
     while (true) {
+        pair<Mat, int> cap;
         Mat frame;
+        int frameNum;
         {
             unique_lock<mutex> lock(mtx_frameQueue);
             cv_frameQueue.wait(lock,
@@ -36,7 +39,9 @@ void processFrame(const String &modelConfiguration, const String &modelWeights,
             if (finished && frameQueue.empty())
                 break;
 
-            frame = frameQueue.front();
+            cap = frameQueue.front();
+            frame = cap.first;
+            frameNum = cap.second;
             frameQueue.pop();
         }
 
@@ -48,9 +53,9 @@ void processFrame(const String &modelConfiguration, const String &modelWeights,
 
         {
             unique_lock<mutex> lock(mtx_outputQueue);
-            outputQueue.push(make_pair(frame, outs));
-            cv_outputQueue.notify_one();
+            outputQueue.push(make_pair(make_pair(frame, frameNum), outs));
         }
+        cv_outputQueue.notify_one();
     }
 }
 
@@ -97,6 +102,7 @@ int main(int argc, char **argv) {
                                  outputLayers));
 
     int frameCount = 0;
+    int actualDisplayNum = 0;
 
     while (true) {
         Mat frame;
@@ -114,27 +120,24 @@ int main(int argc, char **argv) {
         frameCount++;
         cout << "Captured frame size: " << frame.cols << "x" << frame.rows
              << " | Frame Count: " << frameCount << endl;
-
-        if(frameQueue.size() >= MAX_QUEUE_SIZE)
-            continue;
-
-        {
-            unique_lock<mutex> lock(mtx_frameQueue);
-            if (frameQueue.size() >= MAX_QUEUE_SIZE) {
-                cout << "Frame queue is full, waiting..." << endl;
-                cv_frameQueue.wait(
-                    lock, [] { return frameQueue.size() < MAX_QUEUE_SIZE; });
+        
+        if(frameCount % 10 == 0) {
+            {
+                unique_lock<mutex> lock(mtx_frameQueue);
+                if (frameQueue.size() >= MAX_QUEUE_SIZE) {
+                    cout << "Frame queue is full, waiting..." << endl;
+                    cv_frameQueue.wait(
+                        lock, [] { return frameQueue.size() < MAX_QUEUE_SIZE; });
+                }
+                frameQueue.push(make_pair(frame, frameCount));
             }
-            frameQueue.push(frame);
-            cout << "Frame queue size: " << frameQueue.size() << endl;
             cv_frameQueue.notify_one();
         }
 
-        pair<Mat, vector<Mat>> result;
-        if (outputQueue.empty()) {
+        if (outputQueue.empty())
             continue;
-        }
 
+        pair<pair<Mat, int>, vector<Mat>> result;
         {
             unique_lock<mutex> lock(mtx_outputQueue);
             cv_outputQueue.wait(
@@ -146,8 +149,15 @@ int main(int argc, char **argv) {
             result = outputQueue.front();
             outputQueue.pop();
         }
-        Mat displayFrame = result.first;
+
+        Mat displayFrame = result.first.first;
+        int displayFrameNum = result.first.second;
         vector<Mat> outs = result.second;
+
+        if(displayFrameNum < actualDisplayNum)
+            continue;
+
+        actualDisplayNum = displayFrameNum;
 
         for (auto &out : outs) {
             for (int i = 0; i < out.rows; ++i) {
@@ -179,9 +189,9 @@ int main(int argc, char **argv) {
         unique_lock<mutex> lock_frame(mtx_frameQueue);
         unique_lock<mutex> lock_output(mtx_outputQueue);
         finished = true;
-        cv_frameQueue.notify_all();
-        cv_outputQueue.notify_all();
     }
+    cv_frameQueue.notify_all();
+    cv_outputQueue.notify_all();
 
     // Join threads
     for (auto &t : workers)
