@@ -66,7 +66,7 @@ void processFrame(const String &modelConfiguration, const String &modelWeights,
 void captureFrames(VideoCapture &cap, double fps, bool camera) {
     int frameCount = 0;
 
-    auto frameDelay = milliseconds((1/(int)(fps * 1000.0)));
+    auto frameDelay = milliseconds(static_cast<int>(1000.0 / fps));
     auto nextFrameTime = steady_clock::now() + frameDelay;
 
     while (true) {
