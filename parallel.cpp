@@ -63,8 +63,11 @@ void processFrame(const String &modelConfiguration, const String &modelWeights,
     }
 }
 
-void captureFrames(VideoCapture &cap) {
+void captureFrames(VideoCapture &cap, double fps, bool camera) {
     int frameCount = 0;
+
+    auto frameDelay = milliseconds((1/(int)(fps * 1000.0)));
+    auto nextFrameTime = steady_clock::now() + frameDelay;
 
     while (true) {
         Mat frame;
@@ -96,6 +99,13 @@ void captureFrames(VideoCapture &cap) {
             frameQueue.push(make_pair(frame, frameCount));
         }
         cv_frameQueue.notify_one();
+
+        auto now = steady_clock::now();
+        // if not read from camera try to achieve desired fps
+        if (now < nextFrameTime && !camera) {
+            this_thread::sleep_until(nextFrameTime);
+        }
+        nextFrameTime += frameDelay;
     }
 }
 
@@ -148,11 +158,9 @@ int main(int argc, char **argv) {
         workers.push_back(thread(processFrame, modelConfiguration, modelWeights,
                                  outputLayers));
 
-    thread captureThread(captureFrames, ref(cap));
+    thread captureThread(captureFrames, ref(cap), fps, camera);
 
     int actualDisplayNum = 0;
-    auto frameDelay = milliseconds((1/(int)(fps * 1000.0)));
-    auto nextFrameTime = steady_clock::now() + frameDelay;
 
     while (true) {
 
@@ -198,12 +206,6 @@ int main(int argc, char **argv) {
 
         imshow("Frame", displayFrame);
 
-        auto now = steady_clock::now();
-        // if not read from camera try to achieve desired fps
-        if (now < nextFrameTime && !camera) {
-            this_thread::sleep_until(nextFrameTime);
-        }
-        nextFrameTime += frameDelay;
 
         if (waitKey(1) == 'q')
             break;
