@@ -1,5 +1,6 @@
 #include <atomic>
 #include <condition_variable>
+#include <chrono>
 #include <iostream>
 #include <mutex>
 #include <opencv2/dnn.hpp>
@@ -11,6 +12,7 @@
 using namespace cv;
 using namespace dnn;
 using namespace std;
+using namespace std::chrono;
 
 // Global queues and synchronization variables
 queue<pair<Mat, int>> frameQueue;
@@ -118,6 +120,8 @@ int main(int argc, char **argv) {
         cap.open(source); // Open video file or camera by identifier
     }
 
+    bool camera = source == "0" ? true : false;
+
     if (!cap.isOpened()) {
         cerr << "Error: Unable to open the video source: " << source << endl;
         return -1;
@@ -132,7 +136,7 @@ int main(int argc, char **argv) {
     cout << "Frame Width: " << frameWidth << "\n";
     cout << "Frame Height: " << frameHeight << "\n";
 
-    if(source == "0")
+    if(camera)
         FRAME_SKIP = 1; // no frame skipping if read from camera
     else
         FRAME_SKIP = (int) fps / 10.0;
@@ -147,6 +151,8 @@ int main(int argc, char **argv) {
     thread captureThread(captureFrames, ref(cap));
 
     int actualDisplayNum = 0;
+    auto frameDelay = milliseconds((1/(int)(fps * 1000.0)));
+    auto nextFrameTime = steady_clock::now() + frameDelay;
 
     while (true) {
 
@@ -191,6 +197,14 @@ int main(int argc, char **argv) {
         }
 
         imshow("Frame", displayFrame);
+
+        auto now = steady_clock::now();
+        // if not read from camera try to achieve desired fps
+        if (now < nextFrameTime && !camera) {
+            this_thread::sleep_until(nextFrameTime);
+        }
+        nextFrameTime += frameDelay;
+
         if (waitKey(1) == 'q')
             break;
     }
