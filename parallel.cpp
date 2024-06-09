@@ -70,6 +70,13 @@ void captureFrames(VideoCapture &cap, double fps, bool camera) {
     auto nextFrameTime = steady_clock::now() + frameDelay;
 
     while (true) {
+        auto now = steady_clock::now();
+        // if not read from camera try to achieve desired fps
+        if (now < nextFrameTime && !camera) {
+            this_thread::sleep_until(nextFrameTime);
+        }
+        nextFrameTime += frameDelay;
+
         Mat frame;
         cap >> frame;
 
@@ -99,13 +106,6 @@ void captureFrames(VideoCapture &cap, double fps, bool camera) {
             frameQueue.push(make_pair(frame, frameCount));
         }
         cv_frameQueue.notify_one();
-
-        auto now = steady_clock::now();
-        // if not read from camera try to achieve desired fps
-        if (now < nextFrameTime && !camera) {
-            this_thread::sleep_until(nextFrameTime);
-        }
-        nextFrameTime += frameDelay;
     }
 }
 
